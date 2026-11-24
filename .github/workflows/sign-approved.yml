@@ -1,0 +1,43 @@
+name: Sign approved commentary
+on:
+  workflow_dispatch:
+    inputs:
+      approved_sha256:
+        description: SHA256 of exact owner-reviewed 2-approved-content.json
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    environment: commentary-approved
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check approved payload hash and sign
+        env:
+          APPROVED_SHA256: ${{ inputs.approved_sha256 }}
+          SIGNING_KEY: ${{ secrets.COMMENTARY_SIGNING_KEY }}
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import os,hashlib,json,base64,tempfile,subprocess
+          from pathlib import Path
+          p=Path('2-approved-content.json').read_bytes()
+          if hashlib.sha256(p).hexdigest()!=os.environ['APPROVED_SHA256']:raise SystemExit('Approved hash differs')
+          data=json.loads(p)
+          if data.get('schema')!=3 or set(data)!=set(['schema','version','introduction','chapters']):raise SystemExit('schema')
+          with tempfile.TemporaryDirectory() as d:
+              key=Path(d)/'key.pem';key.write_text(os.environ['SIGNING_KEY']);key.chmod(0o600)
+              sig=subprocess.check_output(['openssl','dgst','-sha256','-sign',str(key),'2-approved-content.json'])
+          Path('commentary-signed.json').write_text(json.dumps({'payload':base64.b64encode(p).decode(),'signature':base64.b64encode(sig).decode()},separators=(',',':')))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: approved-signed-commentary
+          path: commentary-signed.json
+          retention-days: 7
+# Signing only. No contents write permission and no automatic publication.
+# Owner-approved artifact must be downloaded, signature/hash verified, then replace feed via normal UI.
